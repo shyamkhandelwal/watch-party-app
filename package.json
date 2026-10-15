@@ -1,0 +1,25 @@
+{
+  "name": "syncstream-watch-party",
+  "version": "1.0.0",
+  "description": "Real-time synchronized watch-party web application with sub-250ms propagation, drift modulation, fuzzy discovery, and multi-user interactivity.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "benchmark": "node benchmark.js"
+  },
+  "keywords": [
+    "watch-party",
+    "webrtc",
+    "socket.io",
+    "synchronized-playback",
+    "real-time"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5"
+  }
+}
