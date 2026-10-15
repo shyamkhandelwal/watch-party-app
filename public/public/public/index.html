@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SyncStream — Real-Time Watch Party</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    @keyframes floatUp {
+      0% { transform: translateY(0) scale(0.8); opacity: 1; }
+      50% { transform: translateY(-140px) translateX(15px) scale(1.25); opacity: 0.95; }
+      100% { transform: translateY(-280px) translateX(-15px) scale(1); opacity: 0; }
+    }
+    .emoji-float {
+      position: absolute;
+      bottom: 70px;
+      pointer-events: none;
+      animation: floatUp 2.4s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      z-index: 40;
+      font-size: 2.25rem;
+      filter: drop-shadow(0 4px 8px rgba(0,0,0,0.5));
+    }
+    .lights-out-dim {
+      opacity: 0.12 !important;
+      transition: opacity 0.5s ease;
+    }
+    .lights-out-dim:hover {
+      opacity: 0.95 !important;
+    }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #111827; }
+    ::-webkit-scrollbar-thumb { background: #374151; border-radius: 3px; }
+  </style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen flex flex-col font-sans selection:bg-indigo-500 selection:text-white">
+
+  <!-- JOIN / CREATE MODAL -->
+  <div id="joinModal" class="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+    <div class="bg-gray-900 border border-gray-800 rounded-2xl max-w-md w-full p-6 shadow-2xl">
+      <div class="flex items-center gap-3 mb-4">
+        <div class="w-10 h-10 rounded-xl bg-indigo-600 flex items-center justify-center font-bold text-xl">▶</div>
+        <div>
+          <h1 class="text-xl font-bold text-white">SyncStream Watch Party</h1>
+          <p class="text-xs text-gray-400">Sub-250ms Synchronized Playback & Discovery</p>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <div>
+          <label class="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Your Display Name</label>
+          <input id="usernameInput" type="text" placeholder="e.g. Alex" maxlength="22"
+            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-indigo-500" />
+        </div>
+
+        <div>
+          <label class="block text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Room Code (Leave blank to create new room)</label>
+          <input id="roomCodeInput" type="text" placeholder="e.g. PARTY9" maxlength="8"
+            class="w-full bg-gray-800 border border-gray-700 rounded-xl px-4 py-2.5 text-sm uppercase tracking-widest text-white focus:outline-none focus:border-indigo-500" />
+        </div>
+
+        <button id="joinBtn"
+          class="w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-semibold py-3 rounded-xl shadow-lg transition">
+          Launch / Join Watch Party
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- TOP NAVIGATION BAR -->
+  <header id="topNav" class="border-b border-gray-800 bg-gray-900/80 backdrop-blur px-4 py-3 flex flex-wrap items-center justify-between gap-3 transition-opacity">
+    <div class="flex items-center gap-3">
+      <div class="w-8 h-8 rounded-lg bg-indigo-600 flex items-center justify-center font-bold">▶</div>
+      <span class="font-bold text-lg tracking-tight">SyncStream</span>
+      <span id="connectionBadge" class="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-medium">
+        ● Connected
+      </span>
+    </div>
+
+    <div class="flex flex-wrap items-center gap-2">
+      <!-- Room Code Pill -->
+      <div class="flex items-center bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-xs gap-2">
+        <span class="text-gray-400">Room:</span>
+        <span id="roomCodeDisplay" class="font-mono font-bold text-indigo-400 tracking-wider">------</span>
+        <button id="copyInviteBtn" class="text-xs bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 px-2 py-0.5 rounded transition">
+          Copy Invite Link
+        </button>
+      </div>
+
+      <!-- Cinema Lights Out Button -->
+      <button id="lightsOutBtn" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition">
+        <span>💡</span> <span id="lightsOutText">Cinema Mode</span>
+      </button>
+
+      <!-- Telemetry HUD Toggle -->
+      <button id="toggleHudBtn" class="text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 px-3 py-1.5 rounded-lg text-emerald-400 font-mono">
+        📊 Telemetry HUD
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN CONTENT GRID -->
+  <main class="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 max-w-[1600px] w-full mx-auto">
+
+    <!-- LEFT COLUMN: VIDEO PLAYER + EMOJI BAR + MOVIE DISCOVERY (8 Cols) -->
+    <section class="lg:col-span-8 flex flex-col gap-4">
+
+      <!-- VIDEO CONTAINER -->
+      <div class="relative bg-black rounded-2xl overflow-hidden border border-gray-800 shadow-2xl aspect-video group">
+        <video id="videoPlayer" class="w-full h-full object-contain bg-black" playsinline crossorigin="anonymous">
+          <source src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" type="video/mp4" />
+        </video>
+
+        <!-- Floating Emoji Reaction Layer -->
+        <div id="emojiOverlay" class="absolute inset-0 pointer-events-none overflow-hidden"></div>
+
+        <!-- Sync Status Toast Banner -->
+        <div id="syncBanner" class="absolute top-3 left-3 bg-black/75 backdrop-blur-md border border-gray-700 px-3 py-1.5 rounded-lg text-xs text-gray-200 flex items-center gap-2 pointer-events-none">
+          <span class="w-2 h-2 rounded-full bg-indigo-400 animate-ping"></span>
+          <span id="syncBannerText">Synced with room</span>
+        </div>
+
+        <!-- REAL-TIME TELEMETRY & DRIFT HUD OVERLAY -->
+        <div id="telemetryHud" class="absolute top-3 right-3 bg-gray-950/90 backdrop-blur-md border border-emerald-500/40 rounded-xl p-3 text-xs font-mono text-gray-300 w-64 shadow-xl">
+          <div class="flex items-center justify-between border-b border-gray-800 pb-1.5 mb-2">
+            <span class="text-emerald-400 font-bold">⚡ SYNC TELEMETRY</span>
+            <span id="hudRoleBadge" class="text-[10px] px-1.5 py-0.5 rounded bg-indigo-600 text-white">GUEST</span>
+          </div>
+          <div class="space-y-1">
+            <div class="flex justify-between"><span>Network RTT:</span> <span id="hudRtt" class="text-white">12 ms</span></div>
+            <div class="flex justify-between"><span>Last Prop Latency:</span> <span id="hudProp" class="text-emerald-400">18 ms</span></div>
+            <div class="flex justify-between"><span>p95 Propagation:</span> <span id="hudP95" class="text-emerald-400">24 ms</span></div>
+            <div class="flex justify-between"><span>Playback Drift:</span> <span id="hudDrift" class="text-amber-300">0 ms</span></div>
+            <div class="flex justify-between"><span>Correction Mode:</span> <span id="hudMode" class="text-indigo-400">1.00x Locked</span></div>
+            <div class="flex justify-between"><span>Corrections Count:</span> <span id="hudCorrections">0</span></div>
+          </div>
+        </div>
+
+        <!-- Custom Synchronized Controls Bar -->
+        <div class="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/70 to-transparent p-4 flex flex-col gap-2">
+          <input id="seekBar" type="range" min="0" max="100" step="0.1" value="0"
+            class="w-full accent-indigo-500 h-1.5 bg-gray-700 rounded-lg cursor-pointer" />
+
+          <div class="flex items-center justify-between text-xs">
+            <div class="flex items-center gap-3">
+              <button id="playPauseBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white px-3.5 py-1.5 rounded-lg font-semibold transition">
+                ▶ Play
+              </button>
+              <button id="resyncBtn" class="bg-gray-800 hover:bg-gray-700 text-gray-200 px-2.5 py-1.5 rounded-lg border border-gray-700 transition" title="Force Instant Sync">
+                ⟳ Resync
+              </button>
+              <span id="timeDisplay" class="font-mono text-gray-300">00:00 / 00:00</span>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <span id="nowPlayingTitle" class="font-medium text-indigo-300 truncate max-w-[200px] sm:max-w-xs">Big Buck Bunny</span>
+              <button id="fullscreenBtn" class="bg-gray-800 hover:bg-gray-700 px-2.5 py-1.5 rounded-lg border border-gray-700">⛶</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- EMOJI REACTION BAR & CUSTOM URL LOADER -->
+      <div id="interactiveBar" class="bg-gray-900 border border-gray-800 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-3 transition-opacity">
+        <div class="flex items-center gap-1.5 flex-wrap">
+          <span class="text-xs text-gray-400 mr-1 font-medium">React:</span>
+          <button onclick="sendEmoji('🔥')" class="hover:scale-125 transition text-xl px-1.5">🔥</button>
+          <button onclick="sendEmoji('😂')" class="hover:scale-125 transition text-xl px-1.5">😂</button>
+          <button onclick="sendEmoji('🤯')" class="hover:scale-125 transition text-xl px-1.5">🤯</button>
+          <button onclick="sendEmoji('❤️')" class="hover:scale-125 transition text-xl px-1.5">❤️</button>
+          <button onclick="sendEmoji('👏')" class="hover:scale-125 transition text-xl px-1.5">👏</button>
+          <button onclick="sendEmoji('🍿')" class="hover:scale-125 transition text-xl px-1.5">🍿</button>
+          <button onclick="sendEmoji('😱')" class="hover:scale-125 transition text-xl px-1.5">😱</button>
+        </div>
+
+        <div class="flex items-center gap-2 flex-1 max-w-md">
+          <input id="customUrlInput" type="url" placeholder="Paste direct .mp4 stream URL..."
+            class="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          <button id="loadUrlBtn" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold px-3 py-1.5 rounded-xl whitespace-nowrap">
+            Sync Stream
+          </button>
+        </div>
+      </div>
+
+      <!-- MOVIE DISCOVERY & FUZZY SEARCH ENGINE -->
+      <div id="discoverySection" class="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-col gap-4 transition-opacity">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <h2 class="font-bold text-base text-white">🎬 Shared Movie Discovery</h2>
+            <p class="text-xs text-gray-400">Fuzzy-search titles, tags, or directors — click to play for everyone or queue to playlist</p>
+          </div>
+
+          <div class="flex flex-wrap items-center gap-2">
+            <input id="fuzzySearchInput" type="text" placeholder="Fuzzy search (e.g. 'bck bnny', 'cyber', 'dragon')..."
+              class="bg-gray-800 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-white w-60 focus:outline-none focus:border-indigo-500" />
+
+            <select id="categoryFilter" class="bg-gray-800 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-white">
+              <option value="ALL">All Categories</option>
+              <option value="Animation">Animation</option>
+              <option value="Sci-Fi">Sci-Fi</option>
+              <option value="Fantasy">Fantasy</option>
+              <option value="Action">Action</option>
+              <option value="Adventure">Adventure</option>
+              <option value="Documentary">Documentary</option>
+            </select>
+
+            <select id="sortFilter" class="bg-gray-800 border border-gray-700 rounded-xl px-3 py-1.5 text-xs text-white">
+              <option value="RATING">Top Rated</option>
+              <option value="YEAR">Newest First</option>
+              <option value="TITLE">A - Z</option>
+            </select>
+          </div>
+        </div>
+
+        <div id="movieGrid" class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3"></div>
+      </div>
+    </section>
+
+    <!-- RIGHT COLUMN: MULTI-TAB INTERACTION HUB (4 Cols) -->
+    <aside id="sidebarSection" class="lg:col-span-4 bg-gray-900 border border-gray-800 rounded-2xl flex flex-col h-[760px] overflow-hidden transition-opacity">
+      <!-- Tabs -->
+      <div class="grid grid-cols-4 border-b border-gray-800 text-xs font-semibold bg-gray-950/50">
+        <button onclick="switchTab('chat')" id="tabBtn_chat" class="py-3 border-b-2 border-indigo-500 text-indigo-400">💬 Chat</button>
+        <button onclick="switchTab('playlist')" id="tabBtn_playlist" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-white">🎵 Queue</button>
+        <button onclick="switchTab('polls')" id="tabBtn_polls" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-white">📊 Polls</button>
+        <button onclick="switchTab('users')" id="tabBtn_users" class="py-3 border-b-2 border-transparent text-gray-400 hover:text-white">
+          👥 Room (<span id="userCountBadge">1</span>)
+        </button>
+      </div>
+
+      <!-- TAB 1: LIVE CHAT -->
+      <div id="tabPanel_chat" class="flex-1 flex flex-col overflow-hidden">
+        <div id="chatMessages" class="flex-1 overflow-y-auto p-3 space-y-2.5 text-xs"></div>
+        <form id="chatForm" class="p-3 border-t border-gray-800 flex gap-2 bg-gray-950/40">
+          <input id="chatInput" type="text" placeholder="Send a message to the room..." maxlength="300"
+            class="flex-1 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500" />
+          <button type="submit" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-xl text-xs font-semibold">
+            Send
+          </button>
+        </form>
+      </div>
+
+      <!-- TAB 2: SHARED PLAYLIST -->
+      <div id="tabPanel_playlist" class="hidden flex-1 flex flex-col overflow-hidden p-3 gap-3">
+        <div class="text-xs text-gray-400">Upvote movies to bubble them to the top of the shared queue, or click Play Now.</div>
+        <div id="playlistContainer" class="flex-1 overflow-y-auto space-y-2"></div>
+      </div>
+
+      <!-- TAB 3: GROUP POLLS -->
+      <div id="tabPanel_polls" class="hidden flex-1 flex flex-col overflow-hidden p-3 gap-3">
+        <div class="bg-gray-800/60 border border-gray-700/70 rounded-xl p-3 space-y-2">
+          <div class="text-xs font-semibold text-white">Create Group Poll</div>
+          <input id="pollQuestionInput" type="text" placeholder="e.g. What genre should we watch next?"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
+          <input id="pollOptionsInput" type="text" placeholder="Comma-separated options (e.g. Sci-Fi, Animation, Horror)"
+            class="w-full bg-gray-900 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white" />
+          <button id="createPollBtn" class="w-full bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold py-1.5 rounded-lg">
+            + Launch Live Poll
+          </button>
+        </div>
+        <div id="pollsContainer" class="flex-1 overflow-y-auto space-y-3"></div>
+      </div>
+
+      <!-- TAB 4: PARTICIPANTS & HOST TRANSFER -->
+      <div id="tabPanel_users" class="hidden flex-1 flex flex-col overflow-hidden p-3 gap-3">
+        <div class="text-xs text-gray-400">
+          The current <span class="text-amber-400 font-semibold">👑 Host</span> broadcasts continuous drift-correction beacons and can transfer host rights to any participant.
+        </div>
+        <div id="usersContainer" class="flex-1 overflow-y-auto space-y-2"></div>
+      </div>
+    </aside>
+
+  </main>
+
+  <script>
+    const socket = io();
+
+    // Persistent Client Identity for Seamless Reconnections
+    let userId = localStorage.getItem('syncstream_uid');
+    if (!userId) {
+      userId = 'u_' + Math.random().toString(36).substring(2, 10) + Date.now().toString(36);
+      localStorage.setItem('syncstream_uid', userId);
+    }
+
+    let currentRoom = null;
+    let isHost = false;
+    let lastKnownSeq = 0;
+    let suppressLocalEvents = false;
+    let allMovies = [];
+
+    // Telemetry Metrics Store
+    let rttSamples = [];
+    let propSamples = [];
+    let driftCorrections = 0;
+
+    // Elements
+    const video = document.getElementById('videoPlayer');
+    const playPauseBtn = document.getElementById('playPauseBtn');
+    const seekBar = document.getElementById('seekBar');
+    const timeDisplay = document.getElementById('timeDisplay');
+    const syncBannerText = document.getElementById('syncBannerText');
+
+    // Pre-fill Room Code from URL (?room=XYZ123)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('room')) {
+      document.getElementById('roomCodeInput').value = urlParams.get('room').toUpperCase();
+    }
+    if (localStorage.getItem('syncstream_name')) {
+      document.getElementById('usernameInput').value = localStorage.getItem('syncstream_name');
+    }
+
+    // Fetch Movie Catalog
+    fetch('/api/movies')
+      .then(r => r.json())
+      .then(data => {
+        allMovies = data;
+        renderMovies();
+      });
+
+    // Fuzzy Search Scoring Algorithm (Subsequence + Token Match)
+    function fuzzyScore(text, query) {
+      if (!query) return 1;
+      const t = text.toLowerCase();
+      const q = query.toLowerCase().trim();
+      if (t.includes(q)) return 100;
+
+      // Character subsequence check
+      let qIdx = 0;
+      let consecutive = 0;
+      let score = 0;
+      for (let i = 0; i < t.length && qIdx < q.length; i++) {
+        if (t[i] === q[qIdx]) {
+          qIdx++;
+          consecutive++;
+          score += consecutive * 3;
+        } else {
+          consecutive = 0;
+        }
+      }
+      return qIdx === q.length ? score : 0;
+    }
+
+    function renderMovies() {
+      const query = document.getElementById('fuzzySearchInput').value;
+      const category = document.getElementById('categoryFilter').value;
+      const sort = document.getElementById('sortFilter').value;
+
+      let filtered = allMovies
+        .map(m => {
+          const haystack = `${m.title} ${m.category} ${m.director} ${m.tags.join(' ')}`;
+          return { ...m, score: fuzzyScore(haystack, query) };
+        })
+        .filter(m => m.score > 0 && (category === 'ALL' || m.category === category));
+
+      if (query) {
+        filtered.sort((a, b) => b.score - a.score);
+      } else if (sort === 'RATING') {
+        filtered.sort((a, b) => b.rating - a.rating);
+      } else if (sort === 'YEAR') {
+        filtered.sort((a, b) => b.year - a.year);
+      } else {
+        filtered.sort((a, b) => a.title.localeCompare(b.title));
+      }
+
+      const grid = document.getElementById('movieGrid');
+      if (filtered.length === 0) {
+        grid.innerHTML = `<div class="col-span-full text-center py-8 text-xs text-gray-500">No movies matched your fuzzy search.</div>`;
+        return;
+      }
+
+      grid.innerHTML = filtered.map(m => `
+        <div class="bg-gray-800/70 border border-gray-700/70 rounded-xl overflow-hidden flex flex-col justify-between hover:border-indigo-500/60 transition group">
+          <div>
+            <div class="relative h-28 bg-gray-900 overflow-hidden">
+              <img src="${m.thumb}" alt="${m.title}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
+              <span class="absolute top-2 left-2 bg-black/75 text-[10px] px-2 py-0.5 rounded text-indigo-300 font-medium">${m.category}</span>
+              <span class="absolute bottom-2 right-2 bg-black/80 text-[10px] px-1.5 py-0.5 rounded text-amber-400 font-mono">★ ${m.rating}</span>
+            </div>
+            <div class="p-2.5">
+              <div class="font-bold text-xs text-white truncate">${m.title}</div>
+              <div class="text-[11px] text-gray-400 mt-0.5">${m.year} • ${m.duration}</div>
+              <p class="text-[11px] text-gray-400 line-clamp-2 mt-1">${m.desc}</p>
+            </div>
+          </div>
+          <div class="p-2.5 pt-0 flex gap-1.5">
+            <button onclick="playMovieNow('${m.id}')" class="flex-1 bg-indigo-600 hover:bg-indigo-500 text-white text-[11px] font-semibold py-1.5 rounded-lg transition">
+              ▶ Play Now
+            </button>
+            <button onclick="addMovieToQueue('${m.id}')" class="bg-gray-700 hover:bg-gray-600 text-gray-200 text-[11px] px-2.5 py-1.5 rounded-lg transition" title="Add to Shared Playlist">
+              + Queue
+            </button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    document.getElementById('fuzzySearchInput').addEventListener('input', renderMovies);
+    document.getElementById('categoryFilter').addEventListener('change', renderMovies);
+    document.getElementById('sortFilter').addEventListener('change', renderMovies);
+
+    // Join Room Handler
+    function joinRoom(codeOverride) {
+      const username = document.getElementById('usernameInput').value.trim() || 'Cinephile';
+      const roomCode = (codeOverride !== undefined ? codeOverride : document.getElementById('roomCodeInput').value).trim().toUpperCase();
+      localStorage.setItem('syncstream_name', username);
+
+      socket.emit('join_room', { roomCode, username, userId }, (res) => {
+        if (res && res.ok) {
+          currentRoom = res.room;
+          document.getElementById('joinModal').classList.add('hidden');
+          document.getElementById('roomCodeDisplay').textContent = currentRoom.code;
+
+          // Update URL without reload for easy sharing
+          const newUrl = `${window.location.pathname}?room=${currentRoom.code}`;
+          window.history.replaceState({}, '', newUrl);
+
+          applyFullRoomState(currentRoom);
+        }
+      });
+    }
+
+    document.getElementById('joinBtn').addEventListener('click', () => joinRoom());
+
+    // Automatic Reconnection Handler
+    socket.on('connect', () => {
+      const badge = document.getElementById('connectionBadge');
+      badge.textContent = '● Connected';
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 font-medium';
+
+      if (currentRoom) {
+        joinRoom(currentRoom.code);
+      }
+    });
+
+    socket.on('disconnect', () => {
+      const badge = document.getElementById('connectionBadge');
+      badge.textContent = '○ Reconnecting...';
+      badge.className = 'text-xs px-2.5 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 font-medium animate-pulse';
+    });
+
+    function applyFullRoomState(room) {
+      isHost = (room.hostId === userId);
+      updateHostBadge();
+
+      // Load Current Media & Position
+      lastKnownSeq = room.playback.seq;
+      suppressLocalEvents = true;
+      if (video.src !== room.playback.url) {
+        video.src = room.playback.url;
+      }
+      document.getElementById('nowPlayingTitle').textContent = room.playback.title;
+      video.currentTime = room.playback.position || 0;
+
+      if (room.playback.isPlaying) {
+        video.play().catch(() => {});
+        playPauseBtn.textContent = '⏸ Pause';
+      } else {
+        video.pause();
+        playPauseBtn.textContent = '▶ Play';
+      }
+      setTimeout(() => { suppressLocalEvents = false; }, 250);
+
+      renderUsers(room.users, room.hostId);
+      renderPlaylist(room.playlist);
+      renderPolls(room.polls);
+      document.getElementById('chatMessages').innerHTML = '';
+      room.chat.forEach(appendChatMessage);
+      applyLightsOut(room.lightsOut);
+    }
+
+    function updateHostBadge() {
+      const badge = document.getElementById('hudRoleBadge');
+      if (isHost) {
+        badge.textContent = '👑 HOST';
+        badge.className = 'text-[10px] px-1.5 py-0.5 rounded bg-amber-500 text-black font-bold';
+      } else {
+        badge.textContent = 'PARTICIPANT';
+        badge.className = 'text-[10px] px-1.5 py-0.5 rounded bg-indigo-600 text-white';
+      }
+    }
+
+    // Emit Playback Controls
+    function emitPlayback(type, extra = {}) {
+      if (suppressLocalEvents || !currentRoom) return;
+      socket.emit('playback_action', {
+        type,
+        position: video.currentTime,
+        originTimestamp: Date.now(),
+        ...extra
+      });
+    }
+
+    playPauseBtn.addEventListener('click', () => {
+      if (video.paused) {
+        video.play().catch(() => {});
+        playPauseBtn.textContent = '⏸ Pause';
+        emitPlayback('PLAY');
+      } else {
+        video.pause();
+        playPauseBtn.textContent = '▶ Play';
+        emitPlayback('PAUSE');
+      }
+    });
+
+    seekBar.addEventListener('change', () => {
+      const targetTime = (seekBar.value / 100) * (video.duration || 1);
+      video.currentTime = targetTime;
+      emitPlayback('SEEK', { position: targetTime });
+    });
+
+    document.getElementById('resyncBtn').addEventListener('click', () => {
+      if (currentRoom) joinRoom(currentRoom.code);
+    });
+
+    document.getElementById('fullscreenBtn').addEventListener('click', () => {
+      if (video.requestFullscreen) video.requestFullscreen();
+    });
+
+    // Receive Authoritative Playback Sync Event
+    socket.on('playback_sync', (packet) => {
+      if (packet.seq < lastKnownSeq) return; // Ignore stale out-of-order packets
+      lastKnownSeq = packet.seq;
+
+      // Measure Propagation Latency
+      const propLatency = Math.max(1, Date.now() - (packet.originTimestamp || packet.serverTimestamp));
+      recordPropagationLatency(propLatency);
+
+      suppressLocalEvents = true;
+
+      if (packet.actionType === 'CHANGE_MEDIA' && video.src !== packet.url) {
+        video.src = packet.url;
+        document.getElementById('nowPlayingTitle').textContent = packet.title;
+      }
+
+      // Compensate for network transit time if playing
+      const transitSec = propLatency / 1000;
+      const targetPos = packet.isPlaying ? packet.position + transitSec : packet.position;
+
+      if (Math.abs(video.currentTime - targetPos) > 0.25 || packet.actionType === 'SEEK' || packet.actionType === 'CHANGE_MEDIA') {
+        video.currentTime = targetPos;
+      }
+
+      if (packet.isPlaying) {
+        video.play().catch(() => {});
+        playPauseBtn.textContent = '⏸ Pause';
+      } else {
+        video.pause();
+        playPauseBtn.textContent = '▶ Play';
+      }
+
+      syncBannerText.textContent = `${packet.actorName} ${packet.actionType.toLowerCase()}ed (${propLatency}ms)`;
+      setTimeout(() => { suppressLocalEvents = false; }, 200);
+    });
+
+    // DRIFT DETECTION & AUTOMATIC CORRECTION ENGINE
+    // Host sends a beacon every 2000ms; Guests compare and smoothly modulate playbackRate or snap-seek
+    setInterval(() => {
+      if (currentRoom && isHost && !video.paused) {
+        socket.emit('host_heartbeat', {
+          position: video.currentTime,
+          isPlaying: !video.paused,
+          originTimestamp: Date.now()
+        });
+      }
+    }, 2000);
+
+    socket.on('drift_beacon', (beacon) => {
+      if (isHost) return;
+
+      const transitSec = Math.max(0, (Date.now() - (beacon.originTimestamp || beacon.serverTimestamp)) / 1000);
+      const expectedTime = beacon.isPlaying ? beacon.position + transitSec : beacon.position;
+      const driftSec = video.currentTime - expectedTime;
+      const driftMs = Math.round(driftSec * 1000);
+
+      document.getElementById('hudDrift').textContent = `${driftMs > 0 ? '+' : ''}${driftMs} ms`;
+
+      // Sync play/pause mismatch
+      if (beacon.isPlaying && video.paused) {
+        video.play().catch(() => {});
+        playPauseBtn.textContent = '⏸ Pause';
+      } else if (!beacon.isPlaying && !video.paused) {
+        video.pause();
+        playPauseBtn.textContent = '▶ Play';
+      }
+
+      // Tiered Drift Correction Strategy (Guarantees drift <= 500ms)
+      const absDriftMs = Math.abs(driftMs);
+      if (absDriftMs > 500) {
+        // Hard snap correction for large drift (>500ms)
+        suppressLocalEvents = true;
+        video.currentTime = expectedTime;
+        video.playbackRate = 1.0;
+        driftCorrections++;
+        document.getElementById('hudCorrections').textContent = driftCorrections;
+        document.getElementById('hudMode').textContent = '⚡ Hard Snap';
+        setTimeout(() => { suppressLocalEvents = false; }, 150);
+      } else if (absDriftMs > 120 && beacon.isPlaying) {
+        // Gentle Playback Rate Modulation for subtle drift (120ms - 500ms)
+        video.playbackRate = driftMs < 0 ? 1.05 : 0.95;
+        driftCorrections++;
+        document.getElementById('hudCorrections').textContent = driftCorrections;
+        document.getElementById('hudMode').textContent = `${video.playbackRate.toFixed(2)}x Catchup`;
+      } else {
+        // Locked in sync (<120ms)
+        if (video.playbackRate !== 1.0) video.playbackRate = 1.0;
+        document.getElementById('hudMode').textContent = '1.00x Locked';
+      }
+    });
+
+    // Periodic RTT Ping Measurement
+    setInterval(() => {
+      const start = Date.now();
+      socket.emit('ping_check', { clientSendTime: start }, () => {
+        const rtt = Date.now() - start;
+        rttSamples.push(rtt);
+        if (rttSamples.length > 30) rttSamples.shift();
+        document.getElementById('hudRtt').textContent = `${rtt} ms`;
+        socket.emit('report_telemetry', { rtt });
+      });
+    }, 3000);
+
+    function recordPropagationLatency(ms) {
+      propSamples.push(ms);
+      if (propSamples.length > 50) propSamples.shift();
+      const sorted = [...propSamples].sort((a, b) => a - b);
+      const p95Index = Math.floor(sorted.length * 0.95);
+      const p95 = sorted[p95Index] || ms;
+
+      document.getElementById('hudProp').textContent = `${ms} ms`;
+      document.getElementById('hudP95').textContent = `${p95} ms`;
+    }
+
+    // Update Time Bar
+    video.addEventListener('timeupdate', () => {
+      if (!video.duration) return;
+      seekBar.value = (video.currentTime / video.duration) * 100;
+      timeDisplay.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+    });
+
+    function formatTime(sec) {
+      const m = Math.floor(sec / 60).toString().padStart(2, '0');
+      const s = Math.floor(sec % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    // Play Movie or Custom Stream
+    window.playMovieNow = function(movieId) {
+      const m = allMovies.find(x => x.id === movieId);
+      if (!m) return;
+      emitPlayback('CHANGE_MEDIA', { movieId: m.id, url: m.url, title: m.title });
+    };
+
+    window.addMovieToQueue = function(movieId) {
+      const m = allMovies.find(x => x.id === movieId);
+      if (!m) return;
+      socket.emit('playlist_action', { type: 'ADD', item: m });
+      switchTab('playlist');
+    };
+
+    document.getElementById('loadUrlBtn').addEventListener('click', () => {
+      const url = document.getElementById('customUrlInput').value.trim();
+      if (!url) return;
+      emitPlayback('CHANGE_MEDIA', { movieId: 'custom_' + Date.now(), url, title: 'Custom MP4 Stream' });
+      document.getElementById('customUrlInput').value = '';
+    });
+
+    // Emoji Reactions
+    window.sendEmoji = function(emoji) {
+      socket.emit('emoji_reaction', { emoji, videoTime: video.currentTime });
+    };
+
+    socket.on('emoji_reaction', (rx) => {
+      const overlay = document.getElementById('emojiOverlay');
+      const el = document.createElement('div');
+      el.className = 'emoji-float flex flex-col items-center';
+      el.style.left = `${15 + Math.random() * 70}%`;
+      el.innerHTML = `<span>${rx.emoji}</span><span class="text-[10px] bg-black/70 text-white px-1.5 rounded font-sans">${rx.username}</span>`;
+      overlay.appendChild(el);
+      setTimeout(() => el.remove(), 2400);
+    });
+
+    // Chat System
+    document.getElementById('chatForm').addEventListener('submit', (e) => {
+      e.preventDefault();
+      const input = document.getElementById('chatInput');
+      if (!input.value.trim()) return;
+      socket.emit('chat_message', { text: input.value });
+      input.value = '';
+    });
+
+    socket.on('chat_message', appendChatMessage);
+
+    function appendChatMessage(msg) {
+      const box = document.getElementById('chatMessages');
+      const div = document.createElement('div');
+      if (msg.system) {
+        div.className = 'text-center text-[11px] text-indigo-300 bg-indigo-950/40 border border-indigo-800/40 rounded-lg py-1 px-2';
+        div.textContent = msg.text;
+      } else {
+        const isMe = msg.userId === userId;
+        div.className = `flex flex-col ${isMe ? 'items-end' : 'items-start'}`;
+        div.innerHTML = `
+          <span class="text-[10px] text-gray-400 mb-0.5 px-1">${msg.username}</span>
+          <div class="${isMe ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-100'} rounded-2xl px-3 py-1.5 max-w-[85%] break-words">
+            ${msg.text}
+          </div>
+        `;
+      }
+      box.appendChild(div);
+      box.scrollTop = box.scrollHeight;
+    }
+
+    // Shared Playlist Rendering
+    socket.on('playlist_updated', renderPlaylist);
+
+    function renderPlaylist(list) {
+      const container = document.getElementById('playlistContainer');
+      if (!list || list.length === 0) {
+        container.innerHTML = `<div class="text-center text-gray-500 text-xs py-6">Playlist is empty. Add movies from below!</div>`;
+        return;
+      }
+      container.innerHTML = list.map(item => `
+        <div class="bg-gray-800/80 border border-gray-700/70 rounded-xl p-2.5 flex items-center justify-between gap-2">
+          <div class="min-w-0 flex-1">
+            <div class="font-semibold text-xs text-white truncate">${item.title}</div>
+            <div class="text-[10px] text-gray-400">${item.category || 'Stream'} • ${item.duration || ''}</div>
+          </div>
+          <div class="flex items-center gap-1.5">
+            <button onclick="upvoteQueue('${item.id}')" class="bg-gray-700 hover:bg-gray-600 text-amber-300 text-xs px-2 py-1 rounded-lg">
+              ▲ ${item.votes || 1}
+            </button>
+            <button onclick="playFromQueue('${item.url}', '${item.title.replace(/'/g, '')}')" class="bg-indigo-600 hover:bg-indigo-500 text-white text-xs px-2.5 py-1 rounded-lg">
+              ▶
+            </button>
+            <button onclick="removeFromQueue('${item.id}')" class="text-gray-400 hover:text-red-400 text-xs px-1.5">✕</button>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    window.upvoteQueue = (itemId) => socket.emit('playlist_action', { type: 'UPVOTE', itemId });
+    window.removeFromQueue = (itemId) => socket.emit('playlist_action', { type: 'REMOVE', itemId });
+    window.playFromQueue = (url, title) => emitPlayback('CHANGE_MEDIA', { movieId: 'q_' + Date.now(), url, title });
+
+    // Group Polls
+    document.getElementById('createPollBtn').addEventListener('click', () => {
+      const q = document.getElementById('pollQuestionInput').value.trim();
+      const opts = document.getElementById('pollOptionsInput').value.split(',').map(s => s.trim()).filter(Boolean);
+      if (!q || opts.length < 2) return alert('Enter a question and at least 2 comma-separated options.');
+      socket.emit('poll_action', { type: 'CREATE', question: q, options: opts });
+      document.getElementById('pollQuestionInput').value = '';
+      document.getElementById('pollOptionsInput').value = '';
+    });
+
+    socket.on('polls_updated', renderPolls);
+
+    function renderPolls(polls) {
+      const container = document.getElementById('pollsContainer');
+      if (!polls || polls.length === 0) {
+        container.innerHTML = `<div class="text-center text-gray-500 text-xs py-6">No active polls yet. Create one above!</div>`;
+        return;
+      }
+      container.innerHTML = polls.map(poll => {
+        const totalVotes = poll.options.reduce((acc, o) => acc + o.voters.length, 0) || 1;
+        return `
+          <div class="bg-gray-800/80 border border-gray-700 rounded-xl p-3 space-y-2">
+            <div class="font-bold text-xs text-white">${poll.question}</div>
+            <div class="space-y-1.5">
+              ${poll.options.map(opt => {
+                const count = opt.voters.length;
+                const pct = Math.round((count / totalVotes) * 100);
+                const voted = opt.voters.includes(userId);
+                return `
+                  <button onclick="votePoll('${poll.id}',${opt.id})"
+                    class="w-full text-left relative overflow-hidden bg-gray-900 border \${voted ? 'border-indigo-500' : 'border-gray-700'} rounded-lg p-2 text-xs">
+                    <div class="absolute inset-y-0 left-0 bg-indigo-600/30 transition-all" style="width: \${count ? pct : 0}%"></div>
+                    <div class="relative flex justify-between">
+                      <span>\${opt.text}</span>
+                      <span class="font-mono text-gray-400">${count} (${count ? pct : 0}%)</span>
+                    </div>
+                  </button>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    window.votePoll = (pollId, optionId) => socket.emit('poll_action', { type: 'VOTE', pollId, optionId });
+
+    // Participants & Host Transfer
+    socket.on('room_users_updated', ({ users, hostId, systemMessage }) => {
+      if (currentRoom) currentRoom.hostId = hostId;
+      isHost = (hostId === userId);
+      updateHostBadge();
+      renderUsers(users, hostId);
+      if (systemMessage) appendChatMessage(systemMessage);
+    });
+
+    socket.on('host_transferred', ({ hostId, users, systemMessage }) => {
+      if (currentRoom) currentRoom.hostId = hostId;
+      isHost = (hostId === userId);
+      updateHostBadge();
+      renderUsers(users, hostId);
+      if (systemMessage) appendChatMessage(systemMessage);
+    });
+
+    function renderUsers(users, hostId) {
+      const onlineUsers = (users || []).filter(u => u.online);
+      document.getElementById('userCountBadge').textContent = onlineUsers.length;
+      const container = document.getElementById('usersContainer');
+
+      container.innerHTML = onlineUsers.map(u => {
+        const isUserHost = (u.userId === hostId);
+        return `
+          <div class="bg-gray-800/70 border border-gray-700/70 rounded-xl p-2.5 flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="w-2 h-2 rounded-full bg-emerald-400"></span>
+              <span class="text-xs font-semibold text-white">${u.username} ${u.userId === userId ? '(You)' : ''}</span>
+              ${isUserHost ? '<span class="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/40 px-1.5 py-0.5 rounded">👑 Host</span>' : ''}
+            </div>
+            ${(isHost && !isUserHost) ? `
+              <button onclick="transferHost('\${u.userId}')" class="text-[11px] bg-indigo-600/30 hover:bg-indigo-600 text-indigo-200 hover:text-white px-2 py-1 rounded-lg transition">
+                Make Host
+              </button>
+            ` : `<span class="text-[10px] font-mono text-gray-500">\${u.rtt ? u.rtt + 'ms' : 'online'}</span>`}
+          </div>
+        `;
+      }).join('');
+    }
+
+    window.transferHost = (targetUserId) => socket.emit('transfer_host', { targetUserId });
+
+    // Cinema Lights Out Mode
+    document.getElementById('lightsOutBtn').addEventListener('click', () => {
+      socket.emit('toggle_lights_out');
+    });
+
+    socket.on('lights_out_toggled', ({ lightsOut }) => applyLightsOut(lightsOut));
+
+    function applyLightsOut(enabled) {
+      const targets = ['topNav', 'interactiveBar', 'discoverySection', 'sidebarSection'];
+      targets.forEach(id => {
+        const el = document.getElementById(id);
+        if (enabled) el.classList.add('lights-out-dim');
+        else el.classList.remove('lights-out-dim');
+      });
+      document.getElementById('lightsOutText').textContent = enabled ? 'Lights On' : 'Cinema Mode';
+    }
+
+    // Copy Invite Link
+    document.getElementById('copyInviteBtn').addEventListener('click', () => {
+      navigator.clipboard.writeText(window.location.href);
+      const btn = document.getElementById('copyInviteBtn');
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => { btn.textContent = 'Copy Invite Link'; }, 2000);
+    });
+
+    // Toggle Telemetry HUD
+    document.getElementById('toggleHudBtn').addEventListener('click', () => {
+      document.getElementById('telemetryHud').classList.toggle('hidden');
+    });
+
+    // Sidebar Tabs
+    window.switchTab = function(tab) {
+      ['chat', 'playlist', 'polls', 'users'].forEach(t => {
+        document.getElementById(`tabPanel_${t}`).classList.toggle('hidden', t !== tab);
+        const btn = document.getElementById(`tabBtn_${t}`);
+        if (t === tab) {
+          btn.className = 'py-3 border-b-2 border-indigo-500 text-indigo-400';
+        } else {
+          btn.className = 'py-3 border-b-2 border-transparent text-gray-400 hover:text-white';
+        }
+      });
+    };
+  </script>
+</body>
+</html>
